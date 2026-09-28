@@ -1549,6 +1549,7 @@ fn resolve_harness_binary_default(provider: &str) -> Option<PathBuf> {
         "fx" => resolve_fx(),
         "hermes" => resolve_hermes(),
         "antigravity" => resolve_antigravity(),
+        "opencrabs" => resolve_opencrabs(),
         _ => None,
     }
 }
