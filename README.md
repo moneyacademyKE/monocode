@@ -14,6 +14,16 @@
 
 Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Antigravity, Pi, omp, fx, and Hermes Agent. If they’re installed and logged in, MonoCode can run them. Tabs are sessions. The composer is the input. MonoCode does not sell tokens.
 
+## Why this fork exists
+
+[OpenCrabs](https://github.com/adolfousier/opencrabs) is a coding agent that lives in your terminal and your chat channels. It has no desktop app of its own — no window, no tabs, no composer. [MonoCode](https://github.com/hardbeat920/monocode) is exactly that missing piece: a desktop platform for coding agents. This fork exists to put the two together, and then some:
+
+- **A desktop home for OpenCrabs.** The adapter bundled here makes OpenCrabs a first-class provider in MonoCode — sessions as tabs, a model picker with the real model list, tool-call approval prompts, usage meters, everything the other agents get, driven by OpenCrabs' ACP server mode.
+- **Downloads that work.** Upstream has paused new provider PRs, so this fork ships its own builds: macOS, Linux, and Windows binaries in [Releases](https://github.com/moneyacademyKE/monocode/releases/latest), built straight from the adapter branch.
+- **Adapter fixes land here first.** Hardening like named connect failures, mode-switch error reporting, and the picker fixes ship in this fork's builds, then flow upstream via [PR #343](https://github.com/hardbeat920/monocode/pull/343).
+
+The other half of the bridge — the ACP server inside OpenCrabs itself — is tracked upstream in [adolfousier/opencrabs#1674](https://github.com/adolfousier/opencrabs/pull/1674). If both PRs merge, this fork's remaining job is the release channel. Until then, it's the only place to get MonoCode and OpenCrabs in one installer.
+
 ## Install
 
 > Install and log in to at least one provider first:
