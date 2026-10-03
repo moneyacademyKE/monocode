@@ -6,6 +6,7 @@ import {
   loadNotificationPreferences,
   updateNotificationPreferences,
 } from "../model/notificationPreferences";
+import { failLocalStorageWrites } from "../../../test-utils/localStorage";
 import { NotificationMuteControl } from "./NotificationMuteControl";
 
 let container: HTMLDivElement;
@@ -124,15 +125,13 @@ describe("NotificationMuteControl", () => {
         .click(),
     );
     type("17:00");
-    const write = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
-      throw new Error("Storage full");
-    });
+    const restoreWrites = failLocalStorageWrites();
     click("Mute until then");
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not save",
     );
     expect(input!.value).toBe("17:00");
-    write.mockRestore();
+    restoreWrites();
     click("Mute until then");
     expect(loadNotificationPreferences().private.mutedUntil).toBe(
       new Date(2030, 0, 16, 17).getTime(),

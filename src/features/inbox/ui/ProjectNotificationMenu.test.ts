@@ -9,6 +9,7 @@ import {
 import { ProjectRail } from "../../../app/shell/ProjectRail";
 import { invoke } from "@tauri-apps/api/core";
 import { rememberNotificationProjects } from "../../notifications/model/notificationProjects";
+import { failLocalStorageWrites } from "../../../test-utils/localStorage";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string) => {
@@ -192,9 +193,7 @@ it("mutes a repository from its project context menu", async () => {
   expect(mute.getAttribute("aria-haspopup")).toBe("menu");
   act(() => mute.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
   expect(document.querySelector('[role="dialog"]')).toBeNull();
-  const write = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
-    throw new Error("Storage full");
-  });
+  const restoreWrites = failLocalStorageWrites();
   act(() => button("8 hours").click());
   expect(document.querySelector('[role="alert"]')?.textContent).toContain(
     "Could not save",
@@ -203,7 +202,7 @@ it("mutes a repository from its project context menu", async () => {
     loadNotificationPreferences()["local:/work/private"]
       .mutedUntil,
   ).toBeUndefined();
-  write.mockRestore();
+  restoreWrites();
   const start = Date.now();
   act(() => button("8 hours").click());
   const muted = Object.values(loadNotificationPreferences());

@@ -18,6 +18,7 @@ import {
   seedInboxSeenIfNeeded,
 } from "../model/inboxSeen";
 import { useInboxActivity } from "../hooks/useInboxUnseen";
+import { failLocalStorageWrites } from "../../../test-utils/localStorage";
 
 vi.mock("../model/githubTasks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../model/githubTasks")>()),
@@ -138,14 +139,12 @@ it("keeps unread items and the menu open when marking read fails, then allows re
   seedInboxSeenIfNeeded([{ ...entry, updatedAt: "2026-09-15T10:00:00Z" }]);
   rememberInboxItems([{ ...entry, projectPath: "/repos/work" }]);
   const inbox = await openInboxMenu();
-  const write = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
-    throw new Error("Storage full");
-  });
+  const restoreWrites = failLocalStorageWrites();
   act(() => button("Mark all as read").click());
   expect(document.querySelector('[role="alert"]')?.textContent).toContain("Could not save read status");
   expect(isInboxEntryUnseen(entry)).toBe(true);
   expect(button("Mark all as read").disabled).toBe(false);
-  write.mockRestore();
+  restoreWrites();
   act(() => button("Mark all as read").click());
   expect(isInboxEntryUnseen(entry)).toBe(false);
   expect(document.querySelector('[role="menu"][aria-label="Inbox actions"]')).toBeNull();
@@ -320,9 +319,7 @@ it("opens custom timing from the duration submenu for all projects", async () =>
 it("keeps the menu open and reports failed persistence so the action can be retried", async () => {
   await openInboxMenu();
   act(() => button("Mute all projects").click());
-  const write = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
-    throw new Error("Storage full");
-  });
+  const restoreWrites = failLocalStorageWrites();
   act(() => button("4 hours").click());
   expect(document.querySelector('[role="alert"]')?.textContent).toContain(
     "Could not save",
@@ -331,7 +328,7 @@ it("keeps the menu open and reports failed persistence so the action can be retr
   expect(
     document.querySelector('[role="menu"][aria-label="Inbox actions"]'),
   ).not.toBeNull();
-  write.mockRestore();
+  restoreWrites();
   act(() => button("4 hours").click());
   expect(Object.keys(loadNotificationPreferences())).toHaveLength(2);
   expect(
