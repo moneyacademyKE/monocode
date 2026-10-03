@@ -64,6 +64,7 @@ vi.mock("../../../shared/ui/Popover", () => ({
 }));
 
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
+import { HARNESSES } from "../model/session";
 import {
   resetHarnessModelOverlays,
   saveRecentModelChoice,
@@ -166,9 +167,12 @@ describe("model picker", () => {
     const modelFlyout = container.querySelector<HTMLElement>(
       '[role="dialog"][aria-label="Models"]',
     )!;
-    expect(modelFlyout.style.height).toBe("338px");
-    expect(modelFlyout.dataset.minHeight).toBe("340");
-    expect(modelFlyout.dataset.maxHeight).toBe("340");
+    // Rail-derived frame: (harnesses + 1) tabs at 28px plus tab gaps and rail
+    // padding, +2 border. Derived, so the next harness can't stale the number.
+    const menuHeight = (HARNESSES.length + 1) * 28 + HARNESSES.length * 2 + 10;
+    expect(modelFlyout.style.height).toBe(`${menuHeight}px`);
+    expect(modelFlyout.dataset.minHeight).toBe(String(menuHeight + 2));
+    expect(modelFlyout.dataset.maxHeight).toBe(String(menuHeight + 2));
     expect(
       container.querySelector('[role="tablist"][aria-orientation="vertical"]'),
     ).not.toBeNull();
