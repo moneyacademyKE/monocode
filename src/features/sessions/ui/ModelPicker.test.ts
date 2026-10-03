@@ -166,9 +166,9 @@ describe("model picker", () => {
     const modelFlyout = container.querySelector<HTMLElement>(
       '[role="dialog"][aria-label="Models"]',
     )!;
-    expect(modelFlyout.style.height).toBe("404px");
-    expect(modelFlyout.dataset.minHeight).toBe("406");
-    expect(modelFlyout.dataset.maxHeight).toBe("406");
+    expect(modelFlyout.style.height).toBe("338px");
+    expect(modelFlyout.dataset.minHeight).toBe("340");
+    expect(modelFlyout.dataset.maxHeight).toBe("340");
     expect(
       container.querySelector('[role="tablist"][aria-orientation="vertical"]'),
     ).not.toBeNull();
@@ -183,6 +183,8 @@ describe("model picker", () => {
     )!;
     expect(grokTab.className).toContain("rounded-md");
     expect(grokTab.className).not.toContain("transition");
+    // Hover names render in-surface; the native title tooltip is gone.
+    expect(grokTab.hasAttribute("title")).toBe(false);
     hover(grokTab);
     expect(grokTab.getAttribute("aria-selected")).toBe("true");
     expect(
