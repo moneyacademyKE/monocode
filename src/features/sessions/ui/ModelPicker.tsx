@@ -87,9 +87,13 @@ const SETTING_MENU_WIDTH = 210;
 const SUBMENU_OVERLAP = -4;
 const SELF = "[data-model-picker]";
 
-const PROVIDER_TAB_SIZE = 32;
-const PROVIDER_TAB_GAP = 4;
-const PROVIDER_RAIL_PADDING = 12;
+const PROVIDER_TAB_SIZE = 28;
+const PROVIDER_TAB_GAP = 2;
+const PROVIDER_RAIL_PADDING = 10;
+// The frame pins to the rail's natural height: hover-to-select swaps the list
+// on every tab crossing, and a content-sized menu would dance under the
+// cursor. Short rail, less dead space below a one-row provider, and fewer
+// flips onto the composer.
 const MODEL_MENU_HEIGHT =
   (HARNESSES.length + 1) * PROVIDER_TAB_SIZE +
   HARNESSES.length * PROVIDER_TAB_GAP +
@@ -1571,19 +1575,26 @@ function ProviderTabButton({
     <button
       type="button"
       role="tab"
-      title={title}
       aria-label={title}
       aria-selected={selected}
       onMouseDown={(event) => event.preventDefault()}
       onMouseEnter={selected ? undefined : onSelect}
       onClick={onSelect}
-      className={`grid size-8 shrink-0 place-items-center rounded-md ${
+      className={`group relative grid size-7 shrink-0 place-items-center rounded-md ${
         selected
           ? "bg-selection-strong text-content"
           : "text-content/45 hover:bg-content/8 hover:text-content"
       }`}
     >
       <span className="shrink-0">{children}</span>
+      {/* In-surface hover name: a native title paints an unstyled OS tooltip
+          that straddles the popover edge with no separation. */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 hidden -translate-y-1/2 whitespace-nowrap rounded-md border border-content/10 bg-content px-1.5 py-0.5 text-[11px] font-medium leading-4 text-background-base shadow-lg group-hover:block"
+      >
+        {title}
+      </span>
     </button>
   );
 }

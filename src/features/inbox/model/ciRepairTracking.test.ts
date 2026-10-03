@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, expect, it, vi } from "vitest";
 import { buildCiRepairRequest } from "./ciRepair";
+import { failLocalStorageWrites } from "../../../test-utils/localStorage";
 
 const request = buildCiRepairRequest({
   repo: "acme/web",
@@ -146,9 +147,7 @@ it("keeps a completed repair in memory when storage fills up", async () => {
     finish = settle;
     return true;
   });
-  const write = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
-    throw new Error("Quota exceeded");
-  });
+  const restoreWrites = failLocalStorageWrites();
   try {
     finish("completed");
     store.trackCiRepair("/web", request, "new-chat", () => true);
@@ -158,6 +157,6 @@ it("keeps a completed repair in memory when storage fills up", async () => {
         .find((repair) => repair.sessionId === "completed-chat")?.phase,
     ).toBe("completed");
   } finally {
-    write.mockRestore();
+    restoreWrites();
   }
 });

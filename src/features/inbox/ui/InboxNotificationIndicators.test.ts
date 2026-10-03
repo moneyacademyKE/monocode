@@ -8,6 +8,7 @@ import { inboxItemKey, type InboxItem } from "../model/githubTasks";
 import { isInboxEntryUnseen, seedInboxSeenIfNeeded } from "../model/inboxSeen";
 import { saveInboxConnections, saveInboxSource } from "../model/inboxFilters";
 import { updateNotificationPreferences } from "../../notifications/model/notificationPreferences";
+import { failLocalStorageWrites } from "../../../test-utils/localStorage";
 
 const { listInboxItems } = vi.hoisted(() => ({ listInboxItems: vi.fn() }));
 vi.mock("../model/githubTasks", async (importOriginal) => ({
@@ -67,14 +68,12 @@ it("reports a failed mark-all write in Inbox and clears the error after retry", 
     onAskMount: () => {}, onOpenIntegrations: () => {},
   })));
   const markAll = container.querySelector<HTMLButtonElement>('button[aria-label="Mark all as read"]')!;
-  const write = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
-    throw new Error("Storage full");
-  });
+  const restoreWrites = failLocalStorageWrites();
   act(() => markAll.click());
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not save read status");
   expect(isInboxEntryUnseen(entry)).toBe(true);
   expect(markAll.disabled).toBe(false);
-  write.mockRestore();
+  restoreWrites();
   act(() => markAll.click());
   expect(isInboxEntryUnseen(entry)).toBe(false);
   expect(markAll.disabled).toBe(true);
