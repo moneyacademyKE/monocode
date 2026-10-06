@@ -27,10 +27,14 @@ import {
   useState,
   type CSSProperties,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
 import { AttachmentChip } from "./AttachmentChip";
+import { GeneratedImage } from "./GeneratedImage";
 import { MonocodeSparkles } from "./MonocodeSparkles";
+import { OrchestratorConstellation } from "./OrchestratorConstellation";
+import { PlanStepsBurst } from "./PlanStepsBurst";
 import { FilePreview } from "../../files/ui/FilePreview";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { ToolDiffPreview } from "./ToolDiffPreview";
@@ -39,7 +43,7 @@ import { OrchestrationPreview } from "../../orchestration/ui/OrchestrationPrevie
 import { TaskListPreview } from "./TaskListPreview";
 import { HandoffButton, SecondOpinionButton } from "./SecondOpinionButton";
 import { SecondOpinionCard } from "./SecondOpinionCard";
-import { NoteMiniCard } from "../../notes/ui";
+import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 
 import { TerminalSpinner } from "./TerminalSpinner";
 import { Popover } from "../../../shared/ui/Popover";
@@ -76,7 +80,10 @@ import {
   type TurnMetrics,
 } from "../model/session";
 import { HarnessIcon } from "./HarnessIcon";
-import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
+import {
+  innerScrollerTakes,
+  useLockOverscroll,
+} from "../../../shared/hooks/useLockOverscroll";
 import { useTranscriptLayout } from "../hooks/useTranscriptLayout";
 import { useTranscriptAnchor } from "../hooks/useTranscriptAnchor";
 import { useTranscriptSelection } from "../hooks/useTranscriptSelection";
@@ -95,6 +102,7 @@ import {
   groupTurnItems,
   groupTurns,
   initialThinkingIndex,
+  isFailedStatus,
   isIncompleteTool,
   isSubagentBlock,
   isThinkingBlock,
@@ -131,6 +139,7 @@ import {
 import {
   clearTranscriptHighlights,
   paintTranscriptHighlights,
+  transcriptMutationNeedsRepaint,
   transcriptWordRanges,
 } from "../model/transcriptHighlights";
 
@@ -175,6 +184,7 @@ type Props = {
   onOpenDiff?: (path: string) => void;
   onOpenPlan?: (blockId: string) => void;
   onBuildPlan?: (blockId: string, target?: PlanBuildTarget) => void;
+  planBuildTargets?: boolean;
   onSecondOpinion?: (target: ModelTarget, turn: Block[]) => void;
   onHandoff?: (target: ModelTarget, turn: Block[]) => void;
   onEditLastTurn?: () => void;
@@ -217,6 +227,7 @@ function AgentTranscriptComponent({
   onOpenDiff,
   onOpenPlan,
   onBuildPlan,
+  planBuildTargets = true,
   onSecondOpinion,
   onHandoff,
   onEditLastTurn,
@@ -255,9 +266,21 @@ function AgentTranscriptComponent({
   const stickToBottom = useRef(true);
   const showJumpRef = useRef(false);
   const distanceFromBottom = useRef(0);
+  const lastScrollTop = useRef(0);
   const prependHeight = useRef<number | null>(null);
   const wasVisible = useRef(false);
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
+  const seenBlocks = useRef<Set<string> | null>(null);
+  if (!seenBlocks.current) {
+    seenBlocks.current = new Set(
+      blocks.filter((block) => block.text).map((block) => block.id),
+    );
+  }
+  useLayoutEffect(() => {
+    for (const block of blocks) {
+      if (block.text) seenBlocks.current!.add(block.id);
+    }
+  }, [blocks]);
   const [visibleTurnCount, setVisibleTurnCount] = useState(FIRST_PAINT_TURNS);
   // Turns whose folded work the reader has opened, by turn id.
   const [openWork, setOpenWork] = useState<Record<string, boolean>>({});
@@ -316,13 +339,35 @@ function AgentTranscriptComponent({
 
   const syncPinned = useCallback(
     (el: HTMLElement) => {
-      const near = isNearBottom(el);
-      stickToBottom.current = near;
-      distanceFromBottom.current =
-        el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShowJump(!near);
+      const movement = el.scrollTop - lastScrollTop.current;
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // Content growth changes the distance without moving the reader. A
+      // queued event from a previous pin must not unpin (or re-pin) the view.
+      // A taller viewport or shorter transcript can also clamp the previous
+      // offset to the new bottom; that is a layout adjustment, not a scroll up.
+      if (movement !== 0 && !scrollClampedToBottom(el, lastScrollTop.current)) {
+        stickToBottom.current = movement > 0 && isNearBottom(el);
+      }
+      lastScrollTop.current = el.scrollTop;
+      distanceFromBottom.current = distance;
+      setShowJump(!stickToBottom.current && el.scrollHeight > el.clientHeight);
     },
     [setShowJump],
+  );
+
+  const rememberScroll = useCallback((el: HTMLElement) => {
+    lastScrollTop.current = el.scrollTop;
+    distanceFromBottom.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+  }, []);
+
+  const pinTranscript = useCallback(
+    (el: HTMLElement | null) => {
+      if (!el) return;
+      pinToBottom(el);
+      rememberScroll(el);
+    },
+    [rememberScroll],
   );
 
   const jumpToBottom = useCallback(() => {
@@ -331,8 +376,8 @@ function AgentTranscriptComponent({
     setShowJump(false);
     const el = scroller.current;
     syncTranscriptViewport(el);
-    pinToBottom(el);
-  }, [setShowJump]);
+    pinTranscript(el);
+  }, [pinTranscript, setShowJump]);
 
   const setScroller = useCallback(
     (el: HTMLDivElement | null) => {
@@ -359,9 +404,12 @@ function AgentTranscriptComponent({
 
   useEffect(() => {
     if (!visible || !scrollerEl) return;
-    syncPinned(scrollerEl);
-    const onScroll = () => syncPinned(scrollerEl);
+    const onScroll = () => {
+      if (scrollerEl.isConnected && scrollerEl.clientHeight > 0)
+        syncPinned(scrollerEl);
+    };
     const onWheel = (e: WheelEvent) => {
+      if (innerScrollerTakes(scrollerEl, e)) return;
       if (e.deltaY < 0) {
         stickToBottom.current = false;
         setShowJump(true);
@@ -380,8 +428,8 @@ function AgentTranscriptComponent({
     setShowJump(false);
     const el = scroller.current;
     syncTranscriptViewport(el);
-    pinToBottom(el);
-  }, [lastUserId, setShowJump]);
+    pinTranscript(el);
+  }, [lastUserId, pinTranscript, setShowJump]);
 
   // In the chat layout a sent prompt rises from the upper screen into its
   // anchored spot at the top. On mount this only plays for a session's first
@@ -418,21 +466,22 @@ function AgentTranscriptComponent({
     if (el.scrollHeight <= el.clientHeight + NEAR_BOTTOM_PX) {
       stickToBottom.current = true;
       setShowJump(false);
-      pinToBottom(el);
+      pinTranscript(el);
     } else if (restore && !stickToBottom.current) {
       el.scrollTop = Math.max(
         0,
         el.scrollHeight - el.clientHeight - distanceFromBottom.current,
       );
+      rememberScroll(el);
     }
-  }, [visible, setShowJump]);
+  }, [visible, pinTranscript, rememberScroll, setShowJump]);
 
   useLayoutEffect(() => {
     if (!visible || !stickToBottom.current) return;
     const el = scroller.current;
     syncTranscriptViewport(el);
-    pinToBottom(el);
-  }, [blocks, busy, visible]);
+    pinTranscript(el);
+  }, [blocks, busy, pinTranscript, visible]);
 
   useLayoutEffect(() => {
     const el = scrollerEl;
@@ -444,19 +493,20 @@ function AgentTranscriptComponent({
       syncTranscriptViewport(el);
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       if (stickToBottom.current) {
-        pinToBottom(el);
-        distanceFromBottom.current = 0;
+        pinTranscript(el);
         return;
       }
       distanceFromBottom.current = distance;
-      setShowJump(!isNearBottom(el));
+      setShowJump(el.scrollHeight > el.clientHeight);
     };
     const observer = new ResizeObserver(onResize);
     observer.observe(inner);
     observer.observe(el);
     onResize();
     return () => observer.disconnect();
-  }, [scrollerEl, setShowJump, visible]);
+  }, [scrollerEl, pinTranscript, setShowJump, visible]);
+
+  useTurnScrollAnchor(scrollerEl, visible, stickToBottom, rememberScroll);
 
   const turns = groupTurns(blocks, managed);
   const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount);
@@ -476,18 +526,18 @@ function AgentTranscriptComponent({
       // the taller transcript first and unpin it partway up.
       if (stickToBottom.current) {
         syncTranscriptViewport(el);
-        pinToBottom(el);
+        pinTranscript(el);
       } else {
         el.scrollTop =
           el.scrollHeight - el.clientHeight - distanceFromBottom.current;
+        rememberScroll(el);
       }
       return;
     }
     prependHeight.current = null;
     el.scrollTop += el.scrollHeight - previousHeight;
-    distanceFromBottom.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight;
-  }, [visibleTurnCount]);
+    rememberScroll(el);
+  }, [visibleTurnCount, pinTranscript, rememberScroll]);
 
   // Short turns can leave the first paint with empty space above them, and
   // the rest of the window arriving later would then push everything down.
@@ -583,13 +633,16 @@ function AgentTranscriptComponent({
             ? wordRect.top
             : target.getBoundingClientRect().top;
         const delta = targetTop - el.getBoundingClientRect().top - 42;
-        if (Math.abs(delta) > 2) el.scrollTop += delta;
+        if (Math.abs(delta) > 2) {
+          el.scrollTop += delta;
+          rememberScroll(el);
+        }
       };
       align();
       requestAnimationFrame(align);
       return true;
     },
-    [revealBlock],
+    [revealBlock, rememberScroll],
   );
 
   useEffect(() => {
@@ -604,13 +657,20 @@ function AgentTranscriptComponent({
       return;
     }
     let frame = 0;
+    let pending: MutationRecord[] = [];
     const paint = () => {
-      frame = 0;
       const { matches, current } = transcriptWordRanges(el, searchQuery);
       paintTranscriptHighlights(owner, matches, current);
     };
-    const observer = new MutationObserver(() => {
-      if (!frame) frame = requestAnimationFrame(paint);
+    const observer = new MutationObserver((records) => {
+      for (const record of records) pending.push(record);
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const changed = pending;
+        pending = [];
+        if (transcriptMutationNeedsRepaint(changed, searchQuery)) paint();
+      });
     });
     observer.observe(el, {
       childList: true,
@@ -630,7 +690,10 @@ function AgentTranscriptComponent({
       ref={setScroller}
       className="agent-transcript h-full overflow-y-auto overscroll-none [overflow-anchor:none] font-mono text-[13px] leading-5"
     >
-      <div className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-1 pb-8">
+      <div
+        data-transcript-content
+        className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-1 pb-8"
+      >
         {firstVisibleTurn > 0 ? (
           <div className="flex justify-center px-4 py-3">
             <button
@@ -760,7 +823,13 @@ function AgentTranscriptComponent({
               <TranscriptBlock
                 key={item.block.id}
                 block={item.block}
+                revealOnMount={
+                  visible &&
+                  wasVisible.current &&
+                  !seenBlocks.current!.has(item.block.id)
+                }
                 layout={transcriptLayout}
+                visible={item.block.role === "user" ? visible : undefined}
                 stickyIndex={firstVisibleTurn + turnIndex + 1}
                 // Prose reads the same wherever it lands: under the fold
                 // line at the top of the turn, or under the work it follows.
@@ -780,7 +849,7 @@ function AgentTranscriptComponent({
                 onOpenPlan={onOpenPlan}
                 onBuildPlan={onBuildPlan}
                 planBusy={!!busy}
-                planHarness={harness}
+                planHarness={planBuildTargets ? harness : undefined}
                 planModel={model}
                 planModelSettings={modelSettings}
                 cwd={cwd}
@@ -1175,7 +1244,7 @@ function TurnMetricsBadge({
   return (
     <div
       ref={root}
-      className="relative shrink-0"
+      className="relative shrink-0 ml-[3px]"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onFocus={() => setHovered(true)}
@@ -1391,6 +1460,8 @@ function EditLastTurnButton({
 const TranscriptBlock = memo(function TranscriptBlock({
   block,
   layout,
+  visible,
+  revealOnMount,
   stickyIndex,
   underLine = false,
   embedded = false,
@@ -1412,6 +1483,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
 }: {
   block: Block;
   layout: TranscriptLayout;
+  visible?: boolean;
+  revealOnMount?: boolean;
   stickyIndex: number;
   /** True when something already sits directly above this in the turn. */
   underLine?: boolean;
@@ -1438,6 +1511,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
       <UserMessageBlock
         block={block}
         layout={layout}
+        visible={visible ?? true}
         stickyIndex={stickyIndex}
         cwd={cwd}
         onEdit={onEditLastTurn}
@@ -1447,6 +1521,10 @@ const TranscriptBlock = memo(function TranscriptBlock({
         onRemoveDraft={onRemoveDraft}
       />
     );
+  }
+
+  if (block.role === "image") {
+    return block.image ? <GeneratedImage image={block.image} /> : null;
   }
 
   if (block.role === "tool") {
@@ -1547,6 +1625,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
       <AgentMarkdown
         text={block.text}
         streaming={block.streaming}
+        revealOnMount={revealOnMount}
         cwd={cwd}
         onOpenFile={onOpenFile}
       />
@@ -1557,6 +1636,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
 function UserMessageBlock({
   block,
   layout,
+  visible,
   stickyIndex,
   onEdit,
   editing = false,
@@ -1567,6 +1647,7 @@ function UserMessageBlock({
 }: {
   block: Block;
   layout: TranscriptLayout;
+  visible: boolean;
   stickyIndex: number;
   onEdit?: () => void;
   editing?: boolean;
@@ -1625,6 +1706,11 @@ function UserMessageBlock({
         setSingleLine(false);
         return;
       }
+      // Pooled or offscreen turns can measure as zero before they are laid out.
+      if (el.clientWidth === 0) {
+        setSingleLine(false);
+        return;
+      }
       if (!lineHeight) {
         lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
       }
@@ -1637,7 +1723,7 @@ function UserMessageBlock({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [text, roundsSingleLine, expanded]);
+  }, [text, roundsSingleLine, expanded, visible]);
 
   const toggle = () => {
     if (overflows) setExpanded((value) => !value);
@@ -1663,7 +1749,7 @@ function UserMessageBlock({
               : "bg-content/10"
           } ${editing ? "edit-last-turn-bubble" : ""} ${
             chat
-              ? `w-fit max-w-xl ${singleLine ? "rounded-full" : "rounded-xl"}`
+              ? `w-fit max-w-[min(100%,36rem)] ${singleLine ? "rounded-full" : "rounded-xl"}`
               : "rounded-lg border border-content/10"
           }`}
           style={{ zIndex: stickyIndex }}
@@ -1769,6 +1855,13 @@ function UserMessageBlock({
           ) : null}
           {monocode ? (
             <MonocodeSparkles blockId={block.id} startedAt={block.startedAt} />
+          ) : block.intent === "plan" ? (
+            <PlanStepsBurst blockId={block.id} startedAt={block.startedAt} />
+          ) : block.intent === "orchestrate" ? (
+            <OrchestratorConstellation
+              blockId={block.id}
+              startedAt={block.startedAt}
+            />
           ) : null}
         </div>
         {text ||
@@ -2029,6 +2122,78 @@ function sameActivity(a: ActivityPhasesProps, b: ActivityPhasesProps): boolean {
 }
 
 /**
+ * Hold the reader's place while turns above the viewport change height. An
+ * off-screen turn keeps its content-visibility placeholder until it is first
+ * laid out, and the scroller opts out of native scroll anchoring, so scrolling
+ * up through a freshly opened chat would otherwise shove the view down by
+ * each turn's correction.
+ */
+function useTurnScrollAnchor(
+  el: HTMLDivElement | null,
+  enabled: boolean,
+  stickToBottom: RefObject<boolean>,
+  onAdjust: (el: HTMLElement) => void,
+) {
+  useLayoutEffect(() => {
+    const inner = el?.firstElementChild;
+    if (!enabled || !el || !inner) return;
+    const heights = new WeakMap<Element, number>();
+    const resize = new ResizeObserver((entries) => {
+      // A parked transcript's scroller is detached and measures zero.
+      if (!el.isConnected) return;
+      const viewportTop = el.getBoundingClientRect().top;
+      let shift = 0;
+      let precedingDelta = 0;
+      const byTurn = new Map(entries.map((entry) => [entry.target, entry]));
+      // Entries can arrive out of order. Later turns already include the
+      // height corrections of earlier turns in their new layout position.
+      for (const turn of inner.children) {
+        const entry = byTurn.get(turn);
+        if (!entry) continue;
+        const height =
+          entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
+        const previous = heights.get(entry.target);
+        heights.set(entry.target, height);
+        if (previous === undefined || stickToBottom.current) continue;
+        // Only turns that sat wholly above the view. A turn the reader is
+        // looking at grows downward from where they are reading.
+        const top = entry.target.getBoundingClientRect().top - precedingDelta;
+        if (top + previous <= viewportTop) shift += height - previous;
+        precedingDelta += height - previous;
+      }
+      if (shift) {
+        el.scrollTop += shift;
+        onAdjust(el);
+      }
+    });
+    let observed = new WeakSet<Element>();
+    const observeTurns = () => {
+      for (const turn of inner.children) {
+        if (observed.has(turn) || !turn.classList.contains("transcript-turn"))
+          continue;
+        observed.add(turn);
+        resize.observe(turn);
+      }
+    };
+    const mutations = new MutationObserver((records) => {
+      // Removal is rare (a rewind or edit), so start over rather than hold
+      // detached turns. Re-observed turns report the height already stored.
+      if (records.some((record) => record.removedNodes.length > 0)) {
+        resize.disconnect();
+        observed = new WeakSet();
+      }
+      observeTurns();
+    });
+    mutations.observe(inner, { childList: true });
+    observeTurns();
+    return () => {
+      mutations.disconnect();
+      resize.disconnect();
+    };
+  }, [el, enabled, stickToBottom, onAdjust]);
+}
+
+/**
  * Keep a live phase body on its newest step. Pinning happens in layout
  * before paint so the window follows without a visible hitch; only a real
  * wheel away from the bottom pauses that.
@@ -2039,6 +2204,7 @@ function useLivePhaseScroll(
   steps: Block[],
 ) {
   const stickToBottom = useRef(true);
+  const lastScrollTop = useRef(0);
   const wasEnabled = useRef(false);
 
   useLayoutEffect(() => {
@@ -2052,16 +2218,24 @@ function useLivePhaseScroll(
     }
     if (!el || !stickToBottom.current) return;
     el.scrollTop = el.scrollHeight;
+    lastScrollTop.current = el.scrollTop;
   }, [el, enabled, steps]);
 
   useEffect(() => {
     if (!el || !enabled) return;
 
     const pin = () => {
-      if (stickToBottom.current) el.scrollTop = el.scrollHeight;
+      if (stickToBottom.current) {
+        el.scrollTop = el.scrollHeight;
+        lastScrollTop.current = el.scrollTop;
+      }
     };
     const onScroll = () => {
-      if (isNearBottom(el)) stickToBottom.current = true;
+      const movement = el.scrollTop - lastScrollTop.current;
+      if (movement !== 0 && !scrollClampedToBottom(el, lastScrollTop.current)) {
+        stickToBottom.current = movement > 0 && isNearBottom(el);
+      }
+      lastScrollTop.current = el.scrollTop;
     };
     const onWheel = (e: WheelEvent) => {
       if (!nestedScrollAbsorbsWheel(el, e.deltaY)) return;
@@ -2615,6 +2789,7 @@ function agentStepBlock(step: AgentStep): Block {
       title: step.text,
       ...(step.toolKind ? { kind: step.toolKind } : {}),
       ...(step.status ? { status: step.status } : {}),
+      ...(step.detail ? { detail: step.detail } : {}),
       ...(step.preview ? { preview: step.preview } : {}),
     },
   };
@@ -2630,7 +2805,14 @@ function subagentStatusLine(block: Block, steps: AgentStep[]): string {
   if (toolCallState(block) === "rejected") return "failed";
   const tools = steps.filter((step) => step.kind === "tool").length;
   if (tools === 0) return "";
-  return tools === 1 ? "1 step" : `${tools} steps`;
+  const count = tools === 1 ? "1 step" : `${tools} steps`;
+  // A step that failed inside a run that went on to finish still has to say so
+  // here, or the row reads clean until someone opens the trail.
+  const failed = steps.filter(
+    (step) => step.kind === "tool" && isFailedStatus(step.status),
+  ).length;
+  if (!failed) return count;
+  return `${count}, ${failed === 1 ? "1 failed" : `${failed} failed`}`;
 }
 
 /** Whether the line that titled a group has more in it than the header shows. */
@@ -2975,11 +3157,7 @@ function ActivityToolRow({
   const appCall = monoCodeToolCall(block);
   if (appCall) {
     return (
-      <MonoCodeCallRow
-        block={block}
-        call={appCall}
-        onApproval={onApproval}
-      />
+      <MonoCodeCallRow block={block} call={appCall} onApproval={onApproval} />
     );
   }
   const label = toolCallLabel(block, cwd);
@@ -3067,7 +3245,8 @@ function MonoCodeCallRow({
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
 }) {
   const state = toolCallState(block);
-  const output = block.tool?.detail?.trim() || block.tool?.preview?.output?.trim();
+  const output =
+    block.tool?.detail?.trim() || block.tool?.preview?.output?.trim();
   const [errorOpen, setErrorOpen] = useState(false);
   const hasError = state === "rejected" && !!output;
   const pendingApproval = needsApproval(block);
@@ -3113,9 +3292,7 @@ function MonoCodeCallRow({
           {summary}
         </button>
       ) : (
-        <div className="flex min-w-0 items-center gap-1.5 py-1">
-          {summary}
-        </div>
+        <div className="flex min-w-0 items-center gap-1.5 py-1">{summary}</div>
       )}
       {errorOpen && hasError ? (
         <pre className="min-w-0 whitespace-pre-wrap break-words py-1 pl-5 font-mono text-[12px] leading-5 text-red-400/80">
@@ -3269,11 +3446,7 @@ function ToolCall({
   if (appCall) {
     return (
       <div className={frame}>
-        <MonoCodeCallRow
-          block={block}
-          call={appCall}
-          onApproval={onApproval}
-        />
+        <MonoCodeCallRow block={block} call={appCall} onApproval={onApproval} />
       </div>
     );
   }
@@ -3726,6 +3899,11 @@ function riseIntoAnchor(scroller: HTMLElement | null, blockId: string) {
 
 function isNearBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+function scrollClampedToBottom(el: HTMLElement, previousTop: number): boolean {
+  const bottom = Math.max(0, el.scrollHeight - el.clientHeight);
+  return previousTop > bottom && Math.abs(el.scrollTop - bottom) < 1;
 }
 
 function pinToBottom(el: HTMLElement | null) {

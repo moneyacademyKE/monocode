@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement, type ComponentProps } from "react";
+import { act, createElement, StrictMode, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatSessionTitle } from "../../features/sessions/model/session";
@@ -7,6 +7,7 @@ import { formatReminderTime } from "../../features/sessions/model/sessionReminde
 import { Sidebar } from "./Sidebar";
 import { loadSessionFolders } from "../../features/sessions/model/sessionFolders";
 import { useProjectDiffStats } from "../../features/source-control/hooks/useProjectDiffStats";
+import { copyText } from "../../platform/tauri/clipboard";
 
 // Keep native services out of these menu/input interaction tests.
 vi.mock("../../features/source-control/hooks/useProjectDiffStats", () => ({
@@ -17,6 +18,9 @@ vi.mock("../../features/source-control/hooks/useGitFileStatuses", () => ({
 }));
 vi.mock("./SidebarUpdate", () => ({ SidebarUpdateFooter: () => null }));
 vi.mock("../../features/files/ui/FileTree", () => ({ FileTree: () => null }));
+vi.mock("../../platform/tauri/clipboard", () => ({
+  copyText: vi.fn().mockResolvedValue(undefined),
+}));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -76,6 +80,7 @@ function startRename() {
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.mocked(copyText).mockReset().mockResolvedValue(undefined);
   vi.mocked(useProjectDiffStats).mockReturnValue(null);
   const stored = new Map<string, string>();
   vi.stubGlobal("localStorage", {
@@ -134,6 +139,32 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("project rail visibility", () => {
+  it("keeps the mounted rail and its scroll state when collapsed", async () => {
+    props = {
+      ...props,
+      recents: [{ path: "/workspace/project", openedAt: Date.now() }],
+      projectRailOpen: true,
+      compactProjectRail: false,
+      onSelectProject: vi.fn(),
+      onOpenProject: vi.fn(),
+    };
+    await act(async () => render());
+    const rail = container.querySelector<HTMLElement>('nav[aria-label="Projects"]');
+    expect(rail).not.toBeNull();
+    rail!.scrollTop = 37;
+
+    props = { ...props, projectRailOpen: false };
+    await act(async () => render());
+    expect(rail?.classList.contains("hidden")).toBe(true);
+
+    props = { ...props, projectRailOpen: true };
+    await act(async () => render());
+    expect(container.querySelector('nav[aria-label="Projects"]')).toBe(rail);
+    expect(rail?.scrollTop).toBe(37);
+  });
 });
 
 describe("sidebar session multiselection", () => {
@@ -422,6 +453,69 @@ describe("sidebar session multiselection", () => {
   });
 });
 
+describe("sidebar session IDs", () => {
+  function openCopyIdMenu(sessionId: string) {
+    act(() => {
+      container
+        .querySelector(`[data-session-card="${sessionId}"]`)!
+        .dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+        );
+    });
+    const trigger = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Copy session ID")!;
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    act(() => trigger.click());
+    return document.querySelector<HTMLElement>(
+      '[role="menu"][aria-label="Copy session ID"]',
+    )!;
+  }
+
+  it("copies either ID from the right-clicked session", async () => {
+    props.sessions = [
+      { ...props.sessions[0], providerSessionId: "harness-session-1" },
+      {
+        ...props.sessions[0],
+        id: "session-2",
+        providerSessionId: "harness-session-2",
+        updatedAt: props.sessions[0].updatedAt - 1,
+      },
+    ];
+    act(() => render());
+    const harnessMenu = openCopyIdMenu("session-2");
+    const copyHarnessId = Array.from(
+      harnessMenu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Harness session ID")!;
+    expect(copyHarnessId.disabled).toBe(false);
+    await act(async () => copyHarnessId.click());
+    expect(copyText).toHaveBeenNthCalledWith(1, "harness-session-2");
+
+    const monocodeMenu = openCopyIdMenu("session-2");
+    const copyMonoCodeId = Array.from(
+      monocodeMenu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "MonoCode session ID")!;
+    expect(copyMonoCodeId.disabled).toBe(false);
+    await act(async () => copyMonoCodeId.click());
+    expect(copyText).toHaveBeenNthCalledWith(2, "session-2");
+  });
+
+  it("keeps the MonoCode ID available before the harness supplies an ID", async () => {
+    act(() => render());
+    const copyMenu = openCopyIdMenu("session-1");
+    const copyHarnessId = Array.from(
+      copyMenu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Harness session ID")!;
+    const copyMonoCodeId = Array.from(
+      copyMenu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "MonoCode session ID")!;
+    expect(copyHarnessId.disabled).toBe(true);
+    expect(copyMonoCodeId.disabled).toBe(false);
+    await act(async () => copyMonoCodeId.click());
+    expect(copyText).toHaveBeenCalledExactlyOnceWith("session-1");
+  });
+});
+
 describe("sidebar session rename", () => {
   it.each(["idle", "working", "needs approval"])(
     "renames from the menu and restores navigation (status=%s)",
@@ -625,6 +719,66 @@ describe("sidebar reorder affordances", () => {
           .className,
       ).not.toContain("cursor-grab");
     }
+  });
+});
+
+describe("sidebar new session rows", () => {
+  it("grows in only for a session that arrives after the list has rendered", () => {
+    const animate = vi
+      .spyOn(HTMLElement.prototype, "animate")
+      .mockImplementation(() => ({ cancel: vi.fn() }) as unknown as Animation);
+    const animated = (property: string) =>
+      animate.mock.calls.flatMap(([keyframes], index) =>
+        property in (keyframes as Keyframe[])[0]
+          ? [animate.mock.contexts[index] as HTMLElement]
+          : [],
+      );
+    // Dev builds replay mount effects; the row must still animate, once.
+    const render = () =>
+      root.render(createElement(StrictMode, null, createElement(Sidebar, props)));
+    act(() => render());
+    expect(animate).not.toHaveBeenCalled();
+
+    props = {
+      ...props,
+      sessions: [
+        {
+          ...props.sessions[0],
+          id: "session-2",
+          createdAt: Date.now(),
+          updatedAt: props.sessions[0].updatedAt + 1,
+        },
+        ...props.sessions,
+      ],
+    };
+    act(() => render());
+    // The new card fades in where it lands; the row below slides down.
+    expect(animated("opacity")).toHaveLength(1);
+    expect(
+      animated("opacity")[0].closest("li")?.querySelector(
+        '[data-session-card="session-2"]',
+      ),
+    ).not.toBeNull();
+    expect(animated("transform")).toHaveLength(1);
+    expect(
+      animated("transform")[0].querySelector('[data-session-card="session-1"]'),
+    ).not.toBeNull();
+    const calls = animate.mock.calls.length;
+
+    props = {
+      ...props,
+      sessions: [
+        { ...props.sessions[0], id: "session-old", createdAt: 1 },
+        ...props.sessions,
+      ],
+    };
+    act(() => render());
+    expect(animate).toHaveBeenCalledTimes(calls);
+
+    // Reordering existing rows must not replay their entrance.
+    props = { ...props, sessions: [...props.sessions].reverse() };
+    act(() => render());
+    expect(animate).toHaveBeenCalledTimes(calls);
   });
 });
 
